@@ -78,11 +78,13 @@ encode_header({Name, Value}, Encoder=#hpackencoder{context=Context}) ->
     end.
 
 try_add_header(Name, Value, Context=#headercontext{}) ->
-    case DoIndexing = header:should_index(Name, Value, Context) of
-        true ->
-            {ok, Context2} = header:add(Name, Value, Context);
-        false ->
-            Context2 = Context
+    Context2 =
+        case DoIndexing = header:should_index(Name, Value, Context) of
+            true ->
+                {ok, Context3} = header:add(Name, Value, Context),
+                Context3;
+            false ->
+                Context
     end,
     {DoIndexing, Context2}.
 
