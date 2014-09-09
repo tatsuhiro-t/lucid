@@ -157,7 +157,7 @@ decode(Bin = <<2#1:1, _/bits>>, Acc, Decoder=#hpackdecoder{context=Context}) ->
     case decode_integer(Bin, 7) of
         {error, Why} ->
             {error, Why};
-        {N, Rest} ->
+        {ok, {N, Rest}} ->
             case header:get(N, Context) of
                 error ->
                     {error, outofindex};
@@ -176,7 +176,7 @@ decode(Bin = <<2#001:3, _/bits>>, Acc, Decoder=#hpackdecoder{}) ->
     case decode_integer(Bin, 5) of
         {error, Why} ->
             {error, Why};
-        {N, Rest} ->
+        {ok, {N, Rest}} ->
             decoder_change_table_size(N, Rest, Acc, Decoder)
     end;
 decode(<<2#00010000:8, Bin/binary>>, Acc, Decoder=#hpackdecoder{}) ->
@@ -207,7 +207,7 @@ decode_indname(Bin, Mode, Acc, Decoder=#hpackdecoder{context=Context}) ->
     case decode_integer(Bin, Prefix) of
         {error, Why} ->
             {error, Why};
-        {Index, Rest} ->
+        {ok, {Index, Rest}} ->
             case header:get(Index, Context) of
                 error ->
                     {error, outofindex};
@@ -244,7 +244,7 @@ decode_integer(<<N/integer, Rest/binary>>, Prefix) ->
     G = N band K,
     case G =/= K of
         true ->
-            {G, Rest};
+            {ok, {G, Rest}};
         false ->
             decode_integer_acc(Rest, Prefix, 0, K)
     end.
@@ -254,7 +254,7 @@ decode_integer_acc(<<N/integer, Rest/binary>>, Prefix, Shift, Acc) ->
     Acc2 = Acc + (M bsl Shift),
     case (N band 16#80) =:= 0 of
         true ->
-            {Acc2, Rest};
+            {ok, {Acc2, Rest}};
         false ->
             decode_integer_acc(Rest, Prefix, Shift + 7, Acc2)
     end;
@@ -270,7 +270,7 @@ decode_string(Bin, Mode) ->
     case decode_integer(Bin, 7) of
         {error, Why} ->
             {error, Why};
-        {Len, Rest} ->
+        {ok, {Len, Rest}} ->
             case Len > size(Rest) of
                 true ->
                     {error, tooshortinput};
@@ -294,11 +294,11 @@ decode_string(Bin, Mode) ->
 
 test_int() ->
     Bin1337 = encode_integer(1337, 5, 0),
-    {1337, <<>>} = decode_integer(Bin1337, 5),
+    {ok, {1337, <<>>}} = decode_integer(Bin1337, 5),
     Bin42 = encode_integer(42, 8, 0),
-    {42, <<>>} = decode_integer(Bin42, 8),
+    {ok, {42, <<>>}} = decode_integer(Bin42, 8),
     BinInt64Max = encode_integer(1 bsl 64, 7, 128),
-    {1 bsl 64, <<"garbage">>} =
+    {ok, {1 bsl 64, <<"garbage">>}} =
         decode_integer(<<BinInt64Max/binary, "garbage">>, 7).
 
 test_encode() ->
