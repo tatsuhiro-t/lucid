@@ -22,7 +22,7 @@
 %% WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 {application, lucid,
  [{vsn, "0.1.0"},
-  {modules, [lucid, http2_sup, http2_serv,
+  {modules, [lucid, http2_sup, http2_serv, writer_serv,
              hpack, header, huffman, huffmandata]},
   {registered, [lucid]},
   {applications, [kernel, stdlib]},

@@ -71,6 +71,8 @@
 
 -record(state, {socket, %% socket of this connection
                 transport,
+                writer,
+                writermon,
                 framer=expect_preface, %% framer state
                 hpackenc=hpack:new_encoder(), %% hpack encoder
                 hpackdec=hpack:new_decoder(), %% hpack decoder
@@ -131,7 +133,10 @@ handle_cast(accept, State=#state{socket=ListenSocket, transport=Transport}) ->
         {ok, Socket} ->
             http2_sup:start_socket(),
             ok = transport_setopts(Transport, Socket, [{active, once}]),
-            State2 = State#state{socket=Socket},
+            {ok, WriterPid} = writer_serv:start([self(), Socket, Transport]),
+            WriterMon = erlang:monitor(process, WriterPid),
+            State2 = State#state{socket=Socket, writer=WriterPid,
+                                 writermon=WriterMon},
             send_settings(State2),
             {noreply, State2};
         {error, _Reason} ->
@@ -158,6 +163,9 @@ handle_info({TxClosed, _Socket}, State)
 handle_info({TxError, _Socket}, State)
   when TxError =:= tcp_error; TxError =:= ssl_error ->
     io:format("connection error~n"),
+    {stop, normal, State};
+handle_info({'DOWN', Mon, process, _Pid, _Reason},
+            State=#state{writermon=Mon}) ->
     {stop, normal, State};
 handle_info({'DOWN', _Mon, process, Pid, Reason}, State) ->
     %% One of request_serv process down
@@ -459,13 +467,12 @@ update_local_window(Len, State=#state{localwin=SessionWin}) ->
     State#state{localwin=NextWin}.
 
 send_headers(_Stream=#stream{stream_id=StreamId}, Headers,
-             State=#state{socket=Socket, transport=Transport,
-                          hpackenc=Encoder}) ->
+             State=#state{hpackenc=Encoder}) ->
     {ok, {HeaderBlock, Encoder2}} = hpack:encode(Headers, Encoder),
     HeaderBlockSize = size(HeaderBlock),
     Bin = <<HeaderBlockSize:24, ?HEADERS:8, ?FLAG_END_HEADERS:8,
             0:1, StreamId:31, HeaderBlock/binary>>,
-    ok = transport_send(Transport, Socket, Bin),
+    ok = send(Bin, State),
     State#state{hpackenc=Encoder2}.
 
 send_queue(State=#state{outq=Outq}) ->
@@ -488,8 +495,7 @@ send_data(_Stream=#stream{stream_id=StreamId}, Body, Final, AvailWin,
     State#state{outq=queue:in({data, StreamId, Body, Final}, Outq)};
 send_data(_Stream=#stream{stream_id=StreamId, remotewin=StreamWin, pid=Pid},
           Body, Final, AvailWin,
-          State=#state{socket=Socket, transport=Transport, streams=Streams,
-                       remotewin=SessionWin}) ->
+          State=#state{streams=Streams, remotewin=SessionWin}) ->
     BodySize = size(Body),
     Size = min(?CHUNK_SIZE, min(BodySize, AvailWin)),
     <<WrBody:Size/binary, Rest/binary>> = Body,
@@ -500,7 +506,7 @@ send_data(_Stream=#stream{stream_id=StreamId, remotewin=StreamWin, pid=Pid},
                             {none, 0}
                     end,
     Bin = <<Size:24, ?DATA:8, Flag:8, 0:1, StreamId:31, WrBody/binary>>,
-    ok = transport_send(Transport, Socket, Bin),
+    ok = send(Bin, State),
     case Final of
         false when size(Rest) =:= 0 ->
             %% Request request_serv to send more data
@@ -530,42 +536,40 @@ send_data_next(StreamId, Rest, Final, State=#state{remotewin=SessionWin}) ->
             send_data(Stream, Rest, Final, AvailWin, State)
     end.
 
-send_settings(_State=#state{socket=Socket, transport=Transport}) ->
+send_settings(State) ->
     Payload = <<?SETTINGS_MAX_HEADER_LIST_SIZE:16, ?MAX_HEADER_LIST_SIZE:32>>,
     Len = size(Payload),
     Bin = <<Len:24, ?SETTINGS:8, ?FLAG_NONE:8, 0:1, 0:31, Payload/binary>>,
-    ok = transport_send(Transport, Socket, Bin),
+    ok = send(Bin, State),
     ok.
 
-send_settings_ack(_State=#state{socket=Socket, transport=Transport}) ->
+send_settings_ack(State) ->
     Bin = <<0:24, ?SETTINGS:8, ?FLAG_ACK:8, 0:32>>,
-    ok = transport_send(Transport, Socket, Bin),
+    ok = send(Bin, State),
     ok.
 
-send_rst_stream(StreamId, ErrorCode,
-                _State=#state{socket=Socket, transport=Transport}) ->
+send_rst_stream(StreamId, ErrorCode, State) ->
     Bin = <<4:24, ?RST_STREAM:8, ?FLAG_NONE:8, 0:1, StreamId:31, ErrorCode:32>>,
-    ok = transport_send(Transport, Socket, Bin),
+    ok = send(Bin, State),
     ok.
 
-send_goaway(_State=#state{socket=Socket, transport=Transport,
-                          last_recv_stream_id=LastRecvStreamId},
-            ErrorCode) ->
+send_goaway(State=#state{last_recv_stream_id=LastRecvStreamId}, ErrorCode) ->
     Bin = <<8:24, ?GOAWAY:8, ?FLAG_NONE:8, 0:32, 0:1, LastRecvStreamId:31,
             ErrorCode:32>>,
-    ok = transport_send(Transport, Socket, Bin),
+    %% Sending GOAWAY is synchronous, since we are always send GOAWAY
+    %% just before terminating connection.
+    ok = send_sync(Bin, State),
     ok.
 
-send_window_update(StreamId, Delta,
-                   _State=#state{socket=Socket, transport=Transport}) ->
+send_window_update(StreamId, Delta, State) ->
     Bin = <<4:24, ?WINDOW_UPDATE:8, ?FLAG_NONE:8, 0:1, StreamId:31,
             0:1, Delta:31>>,
-    ok = transport_send(Transport, Socket, Bin),
+    ok = send(Bin, State),
     ok.
 
-send_ping(OpaqueData, _State=#state{socket=Socket, transport=Transport}) ->
+send_ping(OpaqueData, State) ->
     Bin = <<8:24, ?PING:8, ?FLAG_ACK:8, 0:32, OpaqueData:64>>,
-    ok = transport_send(Transport, Socket, Bin),
+    ok = send(Bin, State),
     ok.
 
 create_new_stream(NextBin, StreamId, _Flag, _Headers, _NumStreams,
@@ -660,22 +664,24 @@ abandon_stream(_Stream=#stream{stream_id=StreamId, pid=Pid, mon=Mon},
     State#state{streams=NewStreams, pids=NewPids}.
 
 connection_error(State, ErrorCode) ->
-    %% TODO Issue GOAWAY
     send_goaway(State, ErrorCode),
     terminate_now(State).
 
 terminate_now(_State) ->
     stop.
 
+send(Bin, #state{writer=Pid}) ->
+    gen_server:cast(Pid, {blob, Bin}),
+    ok.
+
+send_sync(Bin, #state{writer=Pid}) ->
+    ok = gen_server:call(Pid, {blob, Bin}),
+    ok.
+
 transport_close(tcp, Socket) ->
     gen_tcp:close(Socket);
 transport_close(ssl, Socket) ->
     ssl:close(Socket).
-
-transport_send(tcp, Socket, Bin) ->
-    gen_tcp:send(Socket, Bin);
-transport_send(ssl, Socket, Bin) ->
-    ssl:send(Socket, Bin).
 
 transport_accept(tcp, ListenSocket) ->
     gen_tcp:accept(ListenSocket);
