@@ -77,7 +77,7 @@ search(Name, Value, _Context = #headercontext{dyntable=List}) ->
             {match, N};
         {name_match, N} ->
             search(Name, Value, 1, N, List);
-        no_match ->
+        nomatch ->
             search(Name, Value, 1, 0, List)
     end.
 
@@ -93,7 +93,7 @@ search(Name, Value, N, NameMatch, [H|T]) ->
 search(_, _, _, NameMatch, []) when NameMatch > 0 ->
     {name_match, NameMatch};
 search(_, _, _, 0, []) ->
-    no_match.
+    nomatch.
 
 should_index(Name, Value, _Context=#headercontext{maxsize=MaxSize}) ->
     space({Name, Value}) * 4 =< MaxSize * 3.
@@ -343,7 +343,7 @@ static_match(<<"www-authenticate">>, <<>>) ->
 static_match(<<"www-authenticate">>, <<_/binary>>) ->
     {name_match, 61};
 static_match(<<_/binary>>, <<_/binary>>) ->
-    no_match.
+    nomatch.
 
 get(1, _Context) ->
     {<<":authority">>, <<>>};
@@ -477,9 +477,9 @@ test() ->
     Context = new_context(14 + ?HEADER_OVERHEAD),
     {match, 2} = search(<<":method">>, <<"GET">>, Context),
     {name_match, 4} = search(<<":path">>, <<"/foobar">>, Context),
-    no_match = search(<<"my-header">>, <<"myval">>, Context),
+    nomatch = search(<<"my-header">>, <<"myval">>, Context),
     {ok, Context2} = add(<<"my-header">>, <<"myval">>, Context),
     {match, 62} = search(<<"my-header">>, <<"myval">>, Context2),
     {ok, Context3} = add(<<"authorizaton">>, <<"ba">>, Context2),
     {match, 62} = search(<<"authorizaton">>, <<"ba">>, Context3),
-    no_match = search(<<"my-header">>, <<"myval">>, Context3).
+    nomatch = search(<<"my-header">>, <<"myval">>, Context3).

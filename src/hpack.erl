@@ -73,7 +73,7 @@ encode_header({Name, Value}, Encoder=#hpackencoder{context=Context}) ->
             {DoIndexing, Context2} = try_add_header(Name, Value, Context),
             Buf = encode_indname(Index, Value, DoIndexing),
             {Buf, Encoder#hpackencoder{context=Context2}};
-        no_match ->
+        nomatch ->
             {DoIndexing, Context2} = try_add_header(Name, Value, Context),
             Buf = encode_newname(Name, Value, DoIndexing),
             {Buf, Encoder#hpackencoder{context=Context2}}

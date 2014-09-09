@@ -18,7 +18,7 @@ static_match(<<"{name}">>, <<_/binary>>) ->
 
 print '''\
 static_match(<<_/binary>>, <<_/binary>>) ->
-    no_match.
+    nomatch.
 '''
 
 for ent in entries:
