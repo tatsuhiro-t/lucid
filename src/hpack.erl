@@ -34,33 +34,35 @@ new_encoder() ->
                   minsize=0,
                   contextupdate=false}.
 
-encode(Headers, Encoder=#hpackencoder{contextupdate=ContextUpdate}) ->
-    {Buf, Encoder2} =
-        case ContextUpdate of
-            true ->
-                context_update(Encoder);
-            false ->
-                {<<>>, Encoder}
-        end,
-    {Buf2, Encoder3} =
-        lists:foldl(fun(Header, {Acc, Enc}) ->
-                            {Chunk, Enc2} = encode_header(Header, Enc),
-                            {<<Acc/binary, Chunk/binary>>, Enc2}
-                    end, {Buf, Encoder2}, Headers),
-    {ok, {Buf2, Encoder3}}.
+encode(Headers, Encoder=#hpackencoder{contextupdate=ContextUpdate})
+  when ContextUpdate =:= true ->
+    {Buf, Encoder2} = context_update(Encoder),
+    encode(Headers, Buf, Encoder2);
+encode(Headers, Encoder) ->
+    encode(Headers, <<>>, Encoder).
+
+encode(Headers, IniBuf, Encoder) ->
+    {ok,
+     lists:foldl(fun(Header, {Acc, Enc}) ->
+                         {Chunk, Enc2} = encode_header(Header, Enc),
+                         {<<Acc/binary, Chunk/binary>>, Enc2}
+                 end, {IniBuf, Encoder}, Headers)}.
+
 
 context_update(Encoder=#hpackencoder{
                           minsize=MinSize,
                           context=#headercontext{maxsize=MaxSize}
-                         }) ->
-    Buf = case MinSize < MaxSize of
-              true ->
-                  encode_table_size(MinSize);
-              false ->
-                  <<>>
-          end,
-    Buf2 = encode_table_size(MaxSize),
-    {<<Buf/binary, Buf2/binary>>, Encoder#hpackencoder{contextupdate=false}}.
+                         }) when MinSize < MaxSize ->
+    Buf = encode_table_size(MinSize),
+    context_update(Buf, Encoder);
+context_update(Encoder) ->
+    context_update(<<>>, Encoder).
+
+context_update(IniBuf, Encoder=#hpackencoder{
+                                  context=#headercontext{maxsize=MaxSize}
+                                 }) ->
+    Buf = encode_table_size(MaxSize),
+    {<<IniBuf/binary, Buf/binary>>, Encoder#hpackencoder{contextupdate=false}}.
 
 encode_header({Name, Value}, Encoder=#hpackencoder{context=Context}) ->
     case header:search(Name, Value, Context) of
@@ -77,16 +79,15 @@ encode_header({Name, Value}, Encoder=#hpackencoder{context=Context}) ->
             {Buf, Encoder#hpackencoder{context=Context2}}
     end.
 
-try_add_header(Name, Value, Context=#headercontext{}) ->
-    Context2 =
-        case DoIndexing = header:should_index(Name, Value, Context) of
-            true ->
-                {ok, Context3} = header:add(Name, Value, Context),
-                Context3;
-            false ->
-                Context
-    end,
-    {DoIndexing, Context2}.
+try_add_header(Name, Value, Context) ->
+    DoIndexing = header:should_index(Name, Value, Context),
+    try_add_header(Name, Value, DoIndexing, Context).
+
+try_add_header(Name, Value, true, Context) ->
+    {ok, Context2} = header:add(Name, Value, Context),
+    {true, Context2};
+try_add_header(_Name, _Value, false, Context) ->
+    {false, Context}.
 
 encode_table_size(Size) ->
     encode_integer(Size, 5, 16#20).
@@ -94,24 +95,22 @@ encode_table_size(Size) ->
 encode_index(N) ->
     encode_integer(N, 7, 16#80).
 
-encode_indname(N, Value, DoIndexing) ->
-    {Prefix, FirstByte} = case DoIndexing of
-                              true ->
-                                  {6, 16#40};
-                              false ->
-                                  {4, 0}
-                          end,
+encode_indname(N, Value, true) ->
+    encode_indname(N, Value, 6, 16#40);
+encode_indname(N, Value, false) ->
+    encode_indname(N, Value, 4, 0).
+
+encode_indname(N, Value, Prefix, FirstByte) ->
     Buf = encode_integer(N, Prefix, FirstByte),
     Buf2 = encode_string(Value),
     <<Buf/binary, Buf2/binary>>.
 
-encode_newname(Name, Value, DoIndexing) ->
-    FirstByte = case DoIndexing of
-                    true ->
-                        16#40;
-                    false ->
-                        0
-                end,
+encode_newname(Name, Value, true) ->
+    encode_newname2(Name, Value, 16#40);
+encode_newname(Name, Value, false) ->
+    encode_newname2(Name, Value, 0).
+
+encode_newname2(Name, Value, FirstByte) ->
     Buf = <<FirstByte>>,
     Buf2 = encode_string(Name),
     Buf3 = encode_string(Value),
@@ -119,13 +118,13 @@ encode_newname(Name, Value, DoIndexing) ->
 
 encode_integer(N, Prefix, FirstByte) ->
     K = (1 bsl Prefix) - 1,
-    case N < K of
-        true ->
-            <<(N bor FirstByte)>>;
-        false ->
-            M = N - K,
-            encode_integer_acc(M, <<(K bor FirstByte)>>)
-    end.
+    encode_integer2(N, K, FirstByte).
+
+encode_integer2(N, K, FirstByte) when N < K ->
+    <<(N bor FirstByte)>>;
+encode_integer2(N, K, FirstByte) ->
+    M = N - K,
+    encode_integer_acc(M, <<(K bor FirstByte)>>).
 
 encode_integer_acc(N, Acc) when N < 128 ->
     <<Acc/binary, N>>;
@@ -135,16 +134,16 @@ encode_integer_acc(N, Acc) when N >= 128 ->
 
 encode_string(Bin) ->
     HuffmanLength = huffman:encode_length(Bin),
+    encode_length(Bin, HuffmanLength).
+
+encode_length(Bin, HuffmanLength) when HuffmanLength < size(Bin) ->
+    Buf = encode_integer(HuffmanLength, 7, 16#80),
+    Buf2 = huffman:encode(Bin),
+    <<Buf/binary, Buf2/binary>>;
+encode_length(Bin, _) ->
     Size = size(Bin),
-    case HuffmanLength < Size of
-        true ->
-            Buf = encode_integer(HuffmanLength, 7, 16#80),
-            Buf2 = huffman:encode(Bin),
-            <<Buf/binary, Buf2/binary>>;
-        false ->
-            Buf = encode_integer(Size, 7, 0),
-            <<Buf/binary, Bin/binary>>
-    end.
+    Buf = encode_integer(Size, 7, 0),
+    <<Buf/binary, Bin/binary>>.
 
 %% decoder
 
