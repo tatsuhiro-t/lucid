@@ -150,7 +150,7 @@ encode_length(Bin, _) ->
 new_decoder() ->
     #hpackdecoder{context=#headercontext{}, maxsize=4096}.
 
-decode(Bin, Decoder=#hpackdecoder{}) ->
+decode(Bin, Decoder) ->
     decode(Bin, [], Decoder).
 
 decode(Bin = <<2#1:1, _/bits>>, Acc, Decoder=#hpackdecoder{context=Context}) ->
@@ -166,30 +166,30 @@ decode(Bin = <<2#1:1, _/bits>>, Acc, Decoder=#hpackdecoder{context=Context}) ->
             end
     end;
 %% Literal Header Field with incremental indexing - new name
-decode(<<2#01000000:8, Bin/binary>>, Acc, Decoder=#hpackdecoder{}) ->
+decode(<<2#01000000:8, Bin/binary>>, Acc, Decoder) ->
     decode_newname(Bin, indexing, Acc, Decoder);
 %% Literal Header Field with incremental indexing - index name
-decode(Bin = <<2#01:2, _/bits>>, Acc, Decoder=#hpackdecoder{}) ->
+decode(Bin = <<2#01:2, _/bits>>, Acc, Decoder) ->
     decode_indname(Bin, indexing, Acc, Decoder);
 %% Dynamic Table Size Update
-decode(Bin = <<2#001:3, _/bits>>, Acc, Decoder=#hpackdecoder{}) ->
+decode(Bin = <<2#001:3, _/bits>>, Acc, Decoder) ->
     case decode_integer(Bin, 5) of
         {error, Why} ->
             {error, Why};
         {ok, {N, Rest}} ->
             decoder_change_table_size(N, Rest, Acc, Decoder)
     end;
-decode(<<2#00010000:8, Bin/binary>>, Acc, Decoder=#hpackdecoder{}) ->
+decode(<<2#00010000:8, Bin/binary>>, Acc, Decoder) ->
     decode_newname(Bin, neverindexing, Acc, Decoder);
-decode(Bin = <<2#0001:4, _/bits>>, Acc, Decoder=#hpackdecoder{}) ->
+decode(Bin = <<2#0001:4, _/bits>>, Acc, Decoder) ->
     decode_indname(Bin, neverindexing, Acc, Decoder);
 %% Literal Header Field without incremental indexing - new name
-decode(<<2#00000000:8, Bin/binary>>, Acc, Decoder=#hpackdecoder{}) ->
+decode(<<2#00000000:8, Bin/binary>>, Acc, Decoder) ->
     decode_newname(Bin, withoutindexing, Acc, Decoder);
 %% Literal Header Field without incremental indexing - index name
-decode(Bin = <<2#0000:4, _/bits>>, Acc, Decoder=#hpackdecoder{}) ->
+decode(Bin = <<2#0000:4, _/bits>>, Acc, Decoder) ->
     decode_indname(Bin, withoutindexing, Acc, Decoder);
-decode(<<>>, Acc, Decoder=#hpackdecoder{}) ->
+decode(<<>>, Acc, Decoder) ->
     {ok, {lists:reverse(Acc), Decoder}}.
 
 decoder_change_table_size(_, _, _, _) ->
@@ -216,7 +216,7 @@ decode_indname(Bin, Mode, Acc, Decoder=#hpackdecoder{context=Context}) ->
             end
     end.
 
-decode_newname(Bin, Mode, Acc, Decoder=#hpackdecoder{}) ->
+decode_newname(Bin, Mode, Acc, Decoder) ->
     case decode_string(Bin) of
         {error, Why} ->
             {error, Why};

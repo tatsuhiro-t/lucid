@@ -38,7 +38,7 @@ new_context(Size) ->
 space({Name, Value}) ->
     size(Name) + size(Value) + ?HEADER_OVERHEAD.
 
-add(Name, Value, Context=#headercontext{}) ->
+add(Name, Value, Context) ->
     add(Name, Value, space({Name, Value}), Context).
 
 add(_Name, _Value, Space, Context=#headercontext{maxsize=M}) when Space > M ->

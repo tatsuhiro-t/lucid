@@ -47,7 +47,7 @@ decode(Bin) ->
             {error, badhuffstr}
     end.
 
-decode(<<>>, DecodeContext=#decode_context{}) ->
+decode(<<>>, DecodeContext) ->
     DecodeContext;
 decode(<<T/bits>>, DecodeContext=#decode_context{
                                     validity=Validity, state=State,
