@@ -220,7 +220,7 @@ decode_newname(Bin, Mode, Acc, Decoder=#hpackdecoder{}) ->
     case decode_string(Bin) of
         {error, Why} ->
             {error, Why};
-        {Name, Rest} ->
+        {ok, {Name, Rest}} ->
             decode_value(Rest, Mode, Name, Acc, Decoder)
     end.
 
@@ -228,7 +228,7 @@ decode_value(Bin, Mode, Name, Acc, Decoder=#hpackdecoder{context=Context}) ->
     case decode_string(Bin) of
         {error, Why} ->
             {error, Why};
-        {Value, Rest} ->
+        {ok, {Value, Rest}} ->
             case Mode of
                 indexing ->
                     {ok, Context2} = header:add(Name, Value, Context),
@@ -282,10 +282,10 @@ decode_string(Bin, Mode) ->
                                 {error, Why} ->
                                     {error, Why};
                                 Value ->
-                                    {Value, Rest2}
+                                    {ok, {Value, Rest2}}
                             end;
                         normal ->
-                            {RawValue, Rest2}
+                            {ok, {RawValue, Rest2}}
                     end
             end
     end.
