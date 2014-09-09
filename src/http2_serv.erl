@@ -192,33 +192,24 @@ terminate(Reason, _State) ->
 
 %%
 
-on_recv(Bin, State=#state{framer=expect_preface}) ->
-    case Bin of
-        <<"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", Rest/binary>> ->
-            on_recv(Rest, State#state{framer=read_frame, bin = <<>>});
-        _ when size(Bin) < 24 ->
-            State#state{bin=Bin};
-        _ ->
-            terminate_now(State)
-    end;
-on_recv(Bin = <<Len:24, Type:8, Flag:8, _:1, StreamId:31, Rest/binary>>,
-        State=#state{socket=Socket, transport=Transport}) ->
-    case Len > 16384 of
-        true ->
-            connection_error(State, ?PROTOCOL_ERROR);
-        false ->
-            case Len > size(Rest) of
-                true ->
-                    ok = transport_setopts(Transport, Socket,
-                                           [{active, once}]),
-                    State#state{bin=Bin};
-                false ->
-                    io:format("Frame Len=~p Type=~p Flag=~2.16.0B "
-                              "StreamId=~p~n",
-                              [Len, Type, Flag, StreamId]),
-                    handle_frame(Rest, Len, Type, Flag, StreamId, State)
-            end
-    end;
+on_recv(<<"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", Rest/binary>>,
+        State=#state{framer=expect_preface}) ->
+    on_recv(Rest, State#state{framer=read_frame, bin = <<>>});
+on_recv(Bin, State=#state{framer=expect_preface}) when size(Bin) < 24 ->
+    State#state{bin=Bin};
+on_recv(_Bin, State=#state{framer=expect_preface}) ->
+    terminate_now(State);
+on_recv(<<Len:24, _Rest/binary>>, State) when Len > 16384 ->
+    connection_error(State, ?PROTOCOL_ERROR);
+on_recv(Bin = <<Len:24, _Type:8, _Flag:8, _:1, _StreamId:31, Rest/binary>>,
+        State=#state{socket=Socket, transport=Transport})
+  when Len > size(Rest) ->
+    ok = transport_setopts(Transport, Socket, [{active, once}]),
+    State#state{bin=Bin};
+on_recv(<<Len:24, Type:8, Flag:8, _:1, StreamId:31, Rest/binary>>, State) ->
+    io:format("Frame Len=~p Type=~p Flag=~2.16.0B StreamId=~p~n",
+              [Len, Type, Flag, StreamId]),
+    handle_frame(Rest, Len, Type, Flag, StreamId, State);
 on_recv(Bin, State=#state{socket=Socket, transport=Transport})
   when size(Bin) < ?FRAME_HEADER_SIZE ->
     %% Sometimes we will call transport_setopts when underlying Socket
@@ -277,7 +268,7 @@ handle_frame(Bin, Len, ?HEADERS, Flag, StreamId, State)
             State#state{framer=expect_continuation,
                         headersbuf={Len, Flag, StreamId, Payload}});
 handle_frame(Bin, Len, ?HEADERS, Flag, StreamId,
-             State=#state{hpackdec=Decoder})
+             State=#state{hpackdec=Decoder, streams=Streams})
   when StreamId rem 2 =:= 1 ->
     {Payload, NextBin} = strip_padding(Bin, Len, Flag),
     HeaderBlock  =
@@ -295,7 +286,9 @@ handle_frame(Bin, Len, ?HEADERS, Flag, StreamId,
         {ok, {Headers, Decoder2}} ->
             case find_stream(StreamId, State) of
                 error ->
+                    NumStreams = orddict:size(Streams),
                     create_new_stream(NextBin, StreamId, Flag, Headers,
+                                      NumStreams,
                                       State#state{hpackdec=Decoder2});
                 {ok, Stream} ->
                     handle_mid_stream_headers(NextBin, Flag, Stream,
@@ -309,7 +302,7 @@ handle_frame(Bin, Len, ?SETTINGS, Flag, 0, State)
   when Len rem ?SETTINGS_ENTRY_SIZE =:= 0 ->
     <<Payload:Len/binary, NextBin/binary>> = Bin,
     case Flag band ?FLAG_ACK > 0 of
-        true when Len == 0 ->
+        true when Len =:= 0 ->
             on_recv(NextBin, State);
         true ->
             connection_error(State, ?PROTOCOL_ERROR);
@@ -422,17 +415,17 @@ process_upload_data(Len, _Flag, _Payload, _NextBin,
                     _Stream=#stream{localwin=StreamWin}, State)
   when Len > StreamWin ->
     connection_error(State, ?FLOW_CONTROL_ERROR);
-process_upload_data(Len, Flag, _Payload, NextBin,
-                    Stream=#stream{stream_id=StreamId}, State) ->
-
+process_upload_data(Len, Flag, _Payload, NextBin, Stream, State) ->
     %% TODO send upload data to request_serv
-    case Flag band ?FLAG_END_STREAM =:= 0 of
-        true ->
-            on_recv(NextBin, update_local_window(Len, Stream, State));
-        false ->
-            State2 = transit_stream_state(end_stream_remote, StreamId, State),
-            on_recv(NextBin, update_local_window(Len, State2))
-    end.
+    Final = Flag band ?FLAG_END_STREAM > 0,
+    process_upload_data2(Final, Len, NextBin, Stream, State).
+
+process_upload_data2(true, Len, NextBin,
+                     _Stream=#stream{stream_id=StreamId}, State) ->
+    State2 = transit_stream_state(end_stream_remote, StreamId, State),
+    on_recv(NextBin, update_local_window(Len, State2));
+process_upload_data2(false, Len, NextBin, Stream, State) ->
+    on_recv(NextBin, update_local_window(Len, Stream, State)).
 
 update_local_window(Len, _Stream=#stream{stream_id=StreamId,
                                          localwin=StreamWin},
@@ -523,18 +516,18 @@ send_data(_Stream=#stream{stream_id=StreamId, remotewin=StreamWin, pid=Pid},
     State2 = transit_stream_state(Event, StreamId,
                                   State#state{remotewin=SessionWin - Size,
                                               streams=Streams2}),
-    case size(Rest) =:= 0 of
-        true ->
-            State2;
-        false ->
-            case find_stream(StreamId, State2) of
-                error ->
-                    State2;
-                {ok, Stream} ->
-                    NextAvailWin = min(State2#state.remotewin,
-                                       Stream#stream.remotewin),
-                    send_data(Stream, Rest, Final, NextAvailWin, State2)
-            end
+    send_data_next(StreamId, Rest, Final, State2).
+
+send_data_next(_StreamId, Rest, _Final, State)
+  when size(Rest) =:= 0 ->
+    State;
+send_data_next(StreamId, Rest, Final, State=#state{remotewin=SessionWin}) ->
+    case find_stream(StreamId, State) of
+        error ->
+            State;
+        {ok, Stream=#stream{remotewin=StreamWin}} ->
+            AvailWin = min(SessionWin, StreamWin),
+            send_data(Stream, Rest, Final, AvailWin, State)
     end.
 
 send_settings(_State=#state{socket=Socket, transport=Transport}) ->
@@ -575,32 +568,30 @@ send_ping(OpaqueData, _State=#state{socket=Socket, transport=Transport}) ->
     ok = transport_send(Transport, Socket, Bin),
     ok.
 
-create_new_stream(NextBin, StreamId, Flag, Headers,
-                  State=#state{streams=Streams, pids=Pids,
-                               last_recv_stream_id=LastRecvStreamId})
-  when StreamId > LastRecvStreamId ->
-    case orddict:size(Streams) < ?MAX_CONCURRENT_STREAMS of
-        true ->
-            %% New stream created
-            io:format("Created Stream ID ~p~n", [StreamId]),
-            StreamState =
-                case Flag band ?FLAG_END_STREAM > 0 of
-                    true ->
-                        halfclosed_remote;
-                    false->
-                        open
-                end,
-            {Streams2, Pids2} = start_request(StreamId, Headers, StreamState,
-                                              Streams, Pids),
-            on_recv(NextBin, State#state{streams=Streams2, pids=Pids2,
-                                         last_recv_stream_id=StreamId});
-        false ->
-            connection_error(State, ?PROTOCOL_ERROR)
-    end;
-create_new_stream(NextBin, _StreamId, _Flag, _Headers, State) ->
+create_new_stream(NextBin, StreamId, _Flag, _Headers, _NumStreams,
+                  State=#state{last_recv_stream_id=LastRecvStreamId})
+  when StreamId =< LastRecvStreamId ->
     %% Ignore if StreamId =< LastRecvStreamId because after we remove
     %% stream, we may get HEADERS, which is valid.
-    on_recv(NextBin, State).
+    on_recv(NextBin, State);
+create_new_stream(_NextBin, _StreamId, _Flag, _Headers, NumStreams, State)
+  when NumStreams >= ? MAX_CONCURRENT_STREAMS ->
+    connection_error(State, ?PROTOCOL_ERROR);
+create_new_stream(NextBin, StreamId, Flag, Headers, _NumStreams,
+                  State=#state{streams=Streams, pids=Pids}) ->
+    %% New stream created
+    io:format("Created Stream ID ~p~n", [StreamId]),
+    StreamState =
+        case Flag band ?FLAG_END_STREAM > 0 of
+            true ->
+                halfclosed_remote;
+            false->
+                open
+        end,
+    {Streams2, Pids2} = start_request(StreamId, Headers, StreamState,
+                                      Streams, Pids),
+    on_recv(NextBin, State#state{streams=Streams2, pids=Pids2,
+                                 last_recv_stream_id=StreamId}).
 
 handle_mid_stream_headers(_NextBin, Flag, _Stream=#stream{state=StreamState},
                           State)

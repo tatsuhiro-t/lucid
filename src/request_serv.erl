@@ -144,39 +144,35 @@ handle_request(State=#state{dispatcher=DispatcherPid, stream_id=StreamId,
             stop
     end.
 
-handle_request_file(State=#state{dispatcher=DispatcherPid, stream_id=StreamId,
-                                 headers=Headers}) ->
+handle_request_file(State=#state{headers=Headers}) ->
     case get_mandatory_headers(Headers) of
         error ->
             reset_stream(?PROTOCOL_ERROR, State);
         {_, _, _, Path} ->
             case check_path(Path) of
                 true ->
-                    NormPath = normalize_path(Path),
-                    case file:open(<<".", NormPath/binary>>,
-                                   [read, binary, raw]) of
-                        {error, _Reason} ->
-                            send_status_reply(<<"404">>, State);
-                        {ok, IoDevice} ->
-                            ResponseHeaders = [{<<":status">>, <<"200">>},
-                                               {<<"server">>, <<"lucid">>}],
-                            case file:read(IoDevice, ?CHUNK_SIZE) of
-                                eof ->
-                                    gen_server:cast(DispatcherPid,
-                                                    {reply, StreamId,
-                                                     ResponseHeaders,
-                                                     <<>>, true}),
-                                    stop;
-                                {ok, Body} ->
-                                    gen_server:cast(DispatcherPid,
-                                                    {reply, StreamId,
-                                                     ResponseHeaders,
-                                                     Body, false}),
-                                    State#state{file=IoDevice}
-                            end
-                    end;
+                    send_file(normalize_path(Path), State);
                 false ->
                     send_status_reply(<<"403">>, State)
+            end
+    end.
+
+send_file(Path, State=#state{dispatcher=DispatcherPid, stream_id=StreamId}) ->
+    case file:open(<<".", Path/binary>>, [read, binary, raw]) of
+        {error, _Reason} ->
+            send_status_reply(<<"404">>, State);
+        {ok, IoDevice} ->
+            ResponseHeaders = [{<<":status">>, <<"200">>},
+                               {<<"server">>, <<"lucid">>}],
+            case file:read(IoDevice, ?CHUNK_SIZE) of
+                eof ->
+                    gen_server:cast(DispatcherPid, {reply, StreamId,
+                                     ResponseHeaders, <<>>, true}),
+                    stop;
+                {ok, Body} ->
+                    gen_server:cast(DispatcherPid, {reply, StreamId,
+                                     ResponseHeaders, Body, false}),
+                    State#state{file=IoDevice}
             end
     end.
 
