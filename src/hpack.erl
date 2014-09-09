@@ -239,26 +239,26 @@ decode_value(Bin, Mode, Name, Acc, Decoder=#hpackdecoder{context=Context}) ->
             end
     end.
 
-decode_integer(<<N/integer, Rest/binary>>, Prefix) ->
+decode_integer(Bin, Prefix) ->
     K = (1 bsl Prefix) - 1,
-    G = N band K,
-    case G =/= K of
-        true ->
-            {ok, {G, Rest}};
-        false ->
-            decode_integer_acc(Rest, Prefix, 0, K)
-    end.
+    decode_integer2(Bin, K).
 
-decode_integer_acc(<<N/integer, Rest/binary>>, Prefix, Shift, Acc) ->
+decode_integer2(<<N/integer, Rest/binary>>, K)
+  when N band K =:= K ->
+    decode_integer_acc(Rest, 0, K);
+decode_integer2(<<N/integer, Rest/binary>>, K) ->
+    {ok, {N band K, Rest}}.
+
+decode_integer_acc(<<N/integer, Rest/binary>>, Shift, Acc) ->
     M = N band 16#7f,
     Acc2 = Acc + (M bsl Shift),
     case (N band 16#80) =:= 0 of
         true ->
             {ok, {Acc2, Rest}};
         false ->
-            decode_integer_acc(Rest, Prefix, Shift + 7, Acc2)
+            decode_integer_acc(Rest, Shift + 7, Acc2)
     end;
-decode_integer_acc(<<>>, _Prefix, _Shift, _Acc) ->
+decode_integer_acc(<<>>, _Shift, _Acc) ->
     {error, eos}.
 
 decode_string(Bin = <<2#1:1, _/bits>>) ->
@@ -270,25 +270,22 @@ decode_string(Bin, Mode) ->
     case decode_integer(Bin, 7) of
         {error, Why} ->
             {error, Why};
+        {ok, {Len, Rest}} when Len > size(Rest) ->
+            {error, tooshortinput};
         {ok, {Len, Rest}} ->
-            case Len > size(Rest) of
-                true ->
-                    {error, tooshortinput};
-                false ->
-                    <<RawValue:Len/binary, Rest2/binary>> = Rest,
-                    case Mode of
-                        huffman ->
-                            case huffman:decode(RawValue) of
-                                {error, Why} ->
-                                    {error, Why};
-                                Value ->
-                                    {ok, {Value, Rest2}}
-                            end;
-                        normal ->
-                            {ok, {RawValue, Rest2}}
-                    end
-            end
+            <<Value:Len/binary, Rest2/binary>> = Rest,
+            decode_string_value(Value, Rest2, Mode)
     end.
+
+decode_string_value(Bin, Rest, huffman) ->
+    case huffman:decode(Bin) of
+        {error, Why} ->
+            {error, Why};
+        Value ->
+            {ok, {Value, Rest}}
+    end;
+decode_string_value(Bin, Rest, normal) ->
+    {ok, {Bin, Rest}}.
 
 %% tests
 
