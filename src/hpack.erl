@@ -281,7 +281,7 @@ decode_string_value(Bin, Rest, huffman) ->
     case huffman:decode(Bin) of
         {error, Why} ->
             {error, Why};
-        Value ->
+        {ok, Value} ->
             {ok, {Value, Rest}}
     end;
 decode_string_value(Bin, Rest, normal) ->

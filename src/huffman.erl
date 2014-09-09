@@ -42,7 +42,7 @@ decode(Bin) ->
         {error, Why} ->
             {error, Why};
         #decode_context{validity=accept, sofar=Sofar} ->
-            Sofar;
+            {ok, Sofar};
         _ ->
             {error, badhuffstr}
     end.
