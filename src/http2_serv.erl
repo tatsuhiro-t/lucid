@@ -132,6 +132,7 @@ handle_cast(accept, State=#state{socket=ListenSocket, transport=Transport}) ->
     case transport_accept(Transport, ListenSocket) of
         {ok, Socket} ->
             http2_sup:start_socket(),
+            ok = transport_handshake(Transport, Socket),
             ok = transport_setopts(Transport, Socket, [{active, once}]),
             {ok, WriterPid} = writer_serv:start([self(), Socket, Transport]),
             WriterMon = erlang:monitor(process, WriterPid),
@@ -686,17 +687,17 @@ transport_close(ssl, Socket) ->
 transport_accept(tcp, ListenSocket) ->
     gen_tcp:accept(ListenSocket);
 transport_accept(ssl, ListenSocket) ->
-    {ok, Socket} = ssl:transport_accept(ListenSocket),
+    ssl:transport_accept(ListenSocket).
+
+transport_handshake(tcp, _Socket) ->
+    ok;
+transport_handshake(ssl, Socket) ->
     case ssl:ssl_accept(Socket) of
         {error, Reason} ->
             {error, Reason};
         ok ->
-            case ssl:negotiated_next_protocol(Socket) of
-                {ok, <<"h2-14">>} ->
-                    {ok, Socket};
-                _ ->
-                    {error, h2_not_negotiated}
-            end
+            {ok, <<"h2-14">>} = ssl:negotiated_next_protocol(Socket),
+            ok
     end.
 
 transport_setopts(tcp, Socket, Opts) ->
