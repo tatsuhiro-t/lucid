@@ -136,7 +136,7 @@ handle_request(State=#state{dispatcher=DispatcherPid, stream_id=StreamId,
             Body = <<"<html><head></head><body>"
                      "<h1>Hello Lucid/Erlang</h1>"
                      "<h2>Request Headers</h2><pre>",
-                     Content/binary,
+                     (html_escape(Content))/binary,
                      "</pre>"
                      "</body></html>">>,
             gen_server:cast(DispatcherPid, {reply, StreamId, ResponseHeaders,
@@ -270,3 +270,9 @@ check_path_tail2(Path) ->
         _ ->
             false
     end.
+
+html_escape(S0) ->
+    S1 = re:replace(S0, <<"&">>, <<"\\&amp;">>, [{return, binary}, global]),
+    S2 = re:replace(S1, <<"<">>, <<"\\&lt;">>, [{return, binary}, global]),
+    S3 = re:replace(S2, <<">">>, <<"\\&gt;">>, [{return, binary}, global]),
+    re:replace(S3, <<"'">>, <<"\\&#39;">>, [{return, binary}, global]).
