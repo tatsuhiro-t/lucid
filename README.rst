@@ -19,6 +19,8 @@ This is because Erlang lacks AEAD cipher suites.
 Lucid also works fine with nghttp client from `nghttp2 project
 <https://nghttp2.org>`_.
 
+Test server is now up at https://nghttp2.org:3456/
+
 Requirements
 ------------
 
