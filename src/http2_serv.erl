@@ -132,14 +132,21 @@ handle_cast(accept, State=#state{socket=ListenSocket, transport=Transport}) ->
     case transport_accept(Transport, ListenSocket) of
         {ok, Socket} ->
             http2_sup:start_socket(),
-            ok = transport_handshake(Transport, Socket),
-            ok = transport_setopts(Transport, Socket, [{active, once}]),
-            {ok, WriterPid} = writer_serv:start([self(), Socket, Transport]),
-            WriterMon = erlang:monitor(process, WriterPid),
-            State2 = State#state{socket=Socket, writer=WriterPid,
-                                 writermon=WriterMon},
-            send_settings(State2),
-            {noreply, State2};
+            log_peer_addr(Transport, Socket),
+            %% Handle error so that crash log is not logged
+            case transport_handshake(Transport, Socket) of
+                {error, _Reason} ->
+                    {stop, normal, State};
+                ok ->
+                    ok = transport_setopts(Transport, Socket, [{active, once}]),
+                    {ok, WriterPid} = writer_serv:start(
+                                        [self(), Socket, Transport]),
+                    WriterMon = erlang:monitor(process, WriterPid),
+                    State2 = State#state{socket=Socket, writer=WriterPid,
+                                         writermon=WriterMon},
+                    send_settings(State2),
+                    {noreply, State2}
+            end;
         {error, _Reason} ->
             http2_sup:start_socket(),
             {noreply, State}
@@ -696,8 +703,14 @@ transport_handshake(ssl, Socket) ->
         {error, Reason} ->
             {error, Reason};
         ok ->
-            {ok, <<"h2-14">>} = ssl:negotiated_next_protocol(Socket),
-            ok
+            case ssl:negotiated_next_protocol(Socket) of
+                {error, Reason} ->
+                    {error, Reason};
+                {ok, <<"h2-14">>} ->
+                    ok;
+                _ ->
+                    {error, h2_not_negotiated}
+            end
     end.
 
 transport_setopts(tcp, Socket, Opts) ->
@@ -705,3 +718,16 @@ transport_setopts(tcp, Socket, Opts) ->
     ok;
 transport_setopts(ssl, Socket, Opts) ->
     ssl:setopts(Socket, Opts).
+
+log_peer_addr(tcp, Socket) ->
+    {ok, {Address, Port}} = inet:peername(Socket),
+    log_peer_addr2(Address, Port),
+    ok;
+log_peer_addr(ssl, Socket) ->
+    {ok, {Address, Port}} = ssl:peername(Socket),
+    log_peer_addr2(Address, Port),
+    ok.
+
+log_peer_addr2(Address, Port) ->
+    io:format("Accepted ~p:~p~n", [Address, Port]),
+    ok.

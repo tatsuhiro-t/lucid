@@ -41,12 +41,20 @@ init([DispatcherPid, Socket, Transport]) ->
 
 handle_call({blob, Bin}, _From,
             State=#state{socket=Socket, transport=Transport}) ->
-    ok = transport_send(Transport, Socket, Bin),
-    {reply, ok, State}.
+    case transport_send(Transport, Socket, Bin) of
+        {error, _Reason} ->
+            {stop, normal, State};
+        ok ->
+            {reply, ok, State}
+    end.
 
 handle_cast({blob, Bin}, State=#state{socket=Socket, transport=Transport}) ->
-    ok = transport_send(Transport, Socket, Bin),
-    {noreply, State}.
+    case transport_send(Transport, Socket, Bin) of
+        {error, _Reason} ->
+            {stop, normal, State};
+        ok ->
+            {noreply, State}
+    end.
 
 handle_info({'DOWN', _Mon, process, _Pid, _Reason}, State) ->
     %% Dispatcher process down, exit requet_server as well
