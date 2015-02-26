@@ -31,6 +31,6 @@
     {ssl, false},
     {ssl_options, [{certfile, "server.crt"},
                    {keyfile, "server.key"},
-                   {next_protocols_advertised, [<<"h2-14">>]}]}
+                   {next_protocols_advertised, [<<"h2">>, <<"h2-16">>, <<"h2-14">>]}]}
    ]}
  ]}.

@@ -706,6 +706,10 @@ transport_handshake(ssl, Socket) ->
             case ssl:negotiated_next_protocol(Socket) of
                 {error, Reason} ->
                     {error, Reason};
+                {ok, <<"h2">>} ->
+                    ok;
+                {ok, <<"h2-16">>} ->
+                    ok;
                 {ok, <<"h2-14">>} ->
                     ok;
                 _ ->
