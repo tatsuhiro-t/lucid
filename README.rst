@@ -7,9 +7,8 @@ This project was started primarily for the author to learn Erlang/OTP.
 Current Status
 --------------
 
-Currently, Lucid implements HTTP/2 draft version `h2-14
-<http://tools.ietf.org/html/draft-ietf-httpbis-http2-14>`_ protocol
-specification.
+Lucid implements latest HTTP/2 draft version and announce h2, h2-16
+and h2-14 ALPN ID in NPN.
 
 Flow control, CONTINUATION, padding and HPACK have been implemented.
 Lucid works with Firefox nightly with
