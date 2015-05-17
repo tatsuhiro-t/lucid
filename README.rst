@@ -8,12 +8,17 @@ Current Status
 --------------
 
 Lucid implements latest HTTP/2 draft version and announce h2, h2-16
-and h2-14 ALPN ID in NPN.
+and h2-14 ALPN ID in NPN. The following features have been implemented:
+ * Flow control
+ * CONTINUATION
+ * HPACK
+ * Client-side padding
+ * Server push
 
-Flow control, CONTINUATION, padding and HPACK have been implemented.
-Lucid works with Firefox nightly with
-``network.http.spdy.enforce-tls-profile`` set to ``false``.
-This is because Erlang lacks AEAD cipher suites.
+Lucid works with Firefox 38.
+Since Erlang SSL module does not support AEAD cipher suites, Firefox refuses to
+connect to this server. To workaround this, open ``about:config`` in Firefox and
+set ``network.http.spdy.enforce-tls-profile`` to ``false``.
 
 Lucid also works fine with nghttp client from `nghttp2 project
 <https://nghttp2.org>`_.

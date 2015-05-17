@@ -30,6 +30,7 @@
 -include("http2.hrl").
 
 -define(MAX_WINDOW_SIZE, ((1 bsl 31) - 1)).
+-define(MAX_STREAM_ID, ((1 bsl 31) - 1)).
 -define(MAX_CONCURRENT_STREAMS, 100).
 
 -define(LOCAL_SESSION_WINDOW_SIZE, 65535).
@@ -48,6 +49,7 @@
 -define(PRIORITY, 16#2).
 -define(RST_STREAM, 16#3).
 -define(SETTINGS, 16#4).
+-define(PUSH_PROMISE, 16#5).
 -define(PING, 16#6).
 -define(GOAWAY, 16#7).
 -define(WINDOW_UPDATE, 16#8).
@@ -83,6 +85,7 @@
                 localwin=?LOCAL_SESSION_WINDOW_SIZE,
                 outq=queue:new(),
                 last_recv_stream_id=0,
+                last_sent_stream_id=0,
                 streams=[], %% orddict(), mapping stream ID to stream.
                 pids=[], %% orddict(), mapping pid to stream ID.
                 headersbuf,
@@ -99,6 +102,22 @@ init([ListenSocket, Transport]) ->
 handle_call(_E, _From, State) ->
     {noreply, State}.
 
+handle_cast({push, StreamId, Headers},
+            State=#state{last_sent_stream_id=LastStreamId}) ->
+    case find_stream(StreamId, State) of
+        error ->
+            {noreply, State};
+        {ok, Stream} ->
+            % generate even-numbered id
+            PromisedStreamId = LastStreamId + 2,
+            State2 = State#state{last_sent_stream_id=PromisedStreamId},
+            case start_push(Stream, PromisedStreamId, Headers, State2) of
+                stop ->
+                    {stop, normal, State2};
+                State3 ->
+                    {noreply, State3}
+            end
+    end;
 handle_cast({reply, StreamId, Headers, Body, Final}, State) ->
     case find_stream(StreamId, State) of
         error ->
@@ -422,14 +441,27 @@ parse_settings(<<>>, State) ->
     send_settings_ack(State),
     State.
 
-start_request(StreamId, Headers, StreamState, Streams, Pids) ->
+start_request(StreamId, Headers, StreamState,
+              State=#state{streams=Streams, pids=Pids}) ->
     {ok, Pid} = request_serv:start([self(), StreamId, Headers]),
     Mon = erlang:monitor(process, Pid),
     Stream = #stream{pid=Pid, mon=Mon, stream_id=StreamId,
                      state=StreamState},
     Streams2 = orddict:store(StreamId, Stream, Streams),
     Pids2 = orddict:store(Pid, StreamId, Pids),
-    {Streams2, Pids2}.
+    State#state{streams=Streams2, pids=Pids2}.
+
+start_push(_S, PromisedStreamId, _H, State) when PromisedStreamId > ?MAX_STREAM_ID ->
+    % stream id overflow, send goaway
+    connection_error(State, 0);
+
+start_push(Stream, PromisedStreamId, Headers, State) ->
+    io:format("Promised Stream ID ~p~n", [PromisedStreamId]),
+    {ok, ServerName} = application:get_env(server_name),
+    Headers2 = lists:merge(Headers,
+        [{<<":authority">>, list_to_binary(ServerName)}]),
+    State2 = start_request(PromisedStreamId, Headers2, open, State),
+    send_push_promise(Stream, PromisedStreamId, Headers2, State2).
 
 start_response(Stream=#stream{remotewin=StreamWin}, Headers, Body, Final,
                State=#state{remotewin=SessionWin}) ->
@@ -585,6 +617,15 @@ send_window_update(StreamId, Delta, State) ->
     ok = send(Bin, State),
     ok.
 
+send_push_promise(_Stream=#stream{stream_id=StreamId},
+                  PromisedStreamId, Headers, State=#state{hpackenc=Encoder}) ->
+    {ok, {HeaderBlock, Encoder2}} = hpack:encode(Headers, Encoder),
+    HeaderBlockSize = size(HeaderBlock),
+    Bin = <<(4+HeaderBlockSize):24, ?PUSH_PROMISE:8, ?FLAG_END_HEADERS:8,
+            0:1, StreamId:31, 0:1, PromisedStreamId:31, HeaderBlock/binary>>,
+    ok = send(Bin, State),
+    State#state{hpackenc=Encoder2}.
+
 send_ping(OpaqueData, State) ->
     Bin = <<8:24, ?PING:8, ?FLAG_ACK:8, 0:32, OpaqueData:64>>,
     ok = send(Bin, State),
@@ -599,8 +640,7 @@ create_new_stream(NextBin, StreamId, _Flag, _Headers, _NumStreams,
 create_new_stream(_NextBin, _StreamId, _Flag, _Headers, NumStreams, State)
   when NumStreams >= ? MAX_CONCURRENT_STREAMS ->
     connection_error(State, ?PROTOCOL_ERROR);
-create_new_stream(NextBin, StreamId, Flag, Headers, _NumStreams,
-                  State=#state{streams=Streams, pids=Pids}) ->
+create_new_stream(NextBin, StreamId, Flag, Headers, _NumStreams, State) ->
     %% New stream created
     io:format("Created Stream ID ~p~n", [StreamId]),
     StreamState =
@@ -610,10 +650,8 @@ create_new_stream(NextBin, StreamId, Flag, Headers, _NumStreams,
             false->
                 open
         end,
-    {Streams2, Pids2} = start_request(StreamId, Headers, StreamState,
-                                      Streams, Pids),
-    on_recv(NextBin, State#state{streams=Streams2, pids=Pids2,
-                                 last_recv_stream_id=StreamId}).
+    State2 = start_request(StreamId, Headers, StreamState, State),
+    on_recv(NextBin, State2#state{last_recv_stream_id=StreamId}).
 
 handle_mid_stream_headers(_NextBin, Flag, _Stream=#stream{state=StreamState},
                           State)
