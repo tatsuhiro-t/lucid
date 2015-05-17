@@ -45,6 +45,7 @@
 
 -define(DATA, 16#0).
 -define(HEADERS, 16#1).
+-define(PRIORITY, 16#2).
 -define(RST_STREAM, 16#3).
 -define(SETTINGS, 16#4).
 -define(PING, 16#6).
@@ -314,6 +315,15 @@ handle_frame(Bin, Len, ?HEADERS, Flag, StreamId,
 handle_frame(_Bin, _Len, ?HEADERS, _Flag, _StreamId, State) ->
     %% Even stream ID (e.g. 2, 4) is illegal
     connection_error(State, ?PROTOCOL_ERROR);
+handle_frame(_Bin, _Len, ?PRIORITY, _Flag, 0, State) ->
+    %% PRIORITY with stream ID == 0 is subject to PROTOCOL_ERROR.
+    connection_error(State, ?PROTOCOL_ERROR);
+handle_frame(<<_Exclusive:1, _DepStreamId:31, _Weight:8, NextBin/binary>>, 5,
+             ?PRIORITY, _Flag, _StreamId, State) ->
+    %% Ignore PRIORITY for now
+    on_recv(NextBin, State);
+handle_frame(_Bin, _Len, ?PRIORITY, _Flag, _StreamId, State) ->
+    connection_error(State, ?FRAME_SIZE_ERROR);
 handle_frame(Bin, Len, ?SETTINGS, Flag, 0, State)
   when Len rem ?SETTINGS_ENTRY_SIZE =:= 0 ->
     <<Payload:Len/binary, NextBin/binary>> = Bin,
