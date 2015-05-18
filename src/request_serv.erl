@@ -35,6 +35,8 @@
                 file %% File if response is served from file
                }).
 
+-define(CSS_FILENAME, "mystyle.css").
+
 start_link(Args) ->
     gen_server:start_link(?MODULE, Args, []).
 
@@ -124,7 +126,17 @@ handle_request(State=#state{dispatcher=DispatcherPid, stream_id=StreamId,
     case get_mandatory_headers(Headers) of
         error ->
             reset_stream(?PROTOCOL_ERROR, State);
-        {_, _, _, _} ->
+        {_M, _S, _A, <<"/"?CSS_FILENAME>>} ->
+            ResponseHeaders =
+                [{<<":status">>, <<"200">>},
+                 {<<"server">>, <<"lucid">>},
+                 {<<"content-type">>, <<"text/css; charset=utf-8">>}],
+            Body = <<"h1 {color:red;text-align:center;}"
+                     "h2 {color:red;}">>,
+            gen_server:cast(DispatcherPid, {reply, StreamId, ResponseHeaders,
+                                            Body, true}),
+            stop;
+        {_M, _S, A, _P} ->
             ResponseHeaders =
                 [{<<":status">>, <<"200">>},
                  {<<"server">>, <<"lucid">>},
@@ -133,12 +145,22 @@ handle_request(State=#state{dispatcher=DispatcherPid, stream_id=StreamId,
                                           <<Acc/binary, K/binary, ": ",
                                             V/binary, "\n">>
                                   end, <<>>, Headers),
-            Body = <<"<html><head></head><body>"
+            Body = <<"<html><head>"
+                     "<link rel='stylesheet' type='text/css' href='"?CSS_FILENAME"'>"
+                     "</head><body>"
                      "<h1>Hello Lucid/Erlang</h1>"
                      "<h2>Request Headers</h2><pre>",
                      (html_escape(Content))/binary,
                      "</pre>"
                      "</body></html>">>,
+
+            PromisedHeaders =
+                [{<<":method">>, <<"GET">>},
+                 {<<":scheme">>, <<"https">>},
+                 {<<":authority">>, A},
+                 {<<":path">>, <<"/"?CSS_FILENAME>>}],
+            gen_server:cast(DispatcherPid, {push, StreamId, PromisedHeaders}),
+
             gen_server:cast(DispatcherPid, {reply, StreamId, ResponseHeaders,
                                             Body, true}),
             stop
