@@ -136,7 +136,7 @@ handle_request(State=#state{dispatcher=DispatcherPid, stream_id=StreamId,
             gen_server:cast(DispatcherPid, {reply, StreamId, ResponseHeaders,
                                             Body, true}),
             stop;
-        {_M, _S, _A, _P} ->
+        {_M, _S, A, _P} ->
             ResponseHeaders =
                 [{<<":status">>, <<"200">>},
                  {<<"server">>, <<"lucid">>},
@@ -156,8 +156,9 @@ handle_request(State=#state{dispatcher=DispatcherPid, stream_id=StreamId,
 
             PromisedHeaders =
                 [{<<":method">>, <<"GET">>},
-                 {<<":path">>, <<"/"?CSS_FILENAME>>},
-                 {<<":scheme">>, <<"https">>}],
+                 {<<":scheme">>, <<"https">>},
+                 {<<":authority">>, A},
+                 {<<":path">>, <<"/"?CSS_FILENAME>>}],
             gen_server:cast(DispatcherPid, {push, StreamId, PromisedHeaders}),
 
             gen_server:cast(DispatcherPid, {reply, StreamId, ResponseHeaders,

@@ -457,11 +457,8 @@ start_push(_S, PromisedStreamId, _H, State) when PromisedStreamId > ?MAX_STREAM_
 
 start_push(Stream, PromisedStreamId, Headers, State) ->
     io:format("Promised Stream ID ~p~n", [PromisedStreamId]),
-    {ok, ServerName} = application:get_env(server_name),
-    Headers2 = lists:merge(Headers,
-        [{<<":authority">>, list_to_binary(ServerName)}]),
-    State2 = start_request(PromisedStreamId, Headers2, open, State),
-    send_push_promise(Stream, PromisedStreamId, Headers2, State2).
+    State2 = start_request(PromisedStreamId, Headers, open, State),
+    send_push_promise(Stream, PromisedStreamId, Headers, State2).
 
 start_response(Stream=#stream{remotewin=StreamWin}, Headers, Body, Final,
                State=#state{remotewin=SessionWin}) ->
