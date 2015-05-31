@@ -20,10 +20,11 @@ Since Erlang SSL module does not support AEAD cipher suites, Firefox refuses to
 connect to this server. To workaround this, open ``about:config`` in Firefox and
 set ``network.http.spdy.enforce-tls-profile`` to ``false``.
 
+It looks like Erlang/OTP 18.0 will finally support AEAD ciphers.  It
+is currently 18.0 RC2 at the time of this writing.
+
 Lucid also works fine with nghttp client from `nghttp2 project
 <https://nghttp2.org>`_.
-
-Test server is now up at https://nghttp2.org:3456/
 
 Requirements
 ------------
