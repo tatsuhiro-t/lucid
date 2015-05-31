@@ -80,6 +80,8 @@
                 hpackenc=hpack:new_encoder(), %% hpack encoder
                 hpackdec=hpack:new_decoder(), %% hpack decoder
                 initial_window_size=?REMOTE_STREAM_WINDOW_SIZE,
+                %% true if remote peer enables push
+                remote_enable_push=true,
                 %% remove connection window size
                 remotewin=?REMOTE_SESSION_WINDOW_SIZE,
                 localwin=?LOCAL_SESSION_WINDOW_SIZE,
@@ -103,7 +105,8 @@ handle_call(_E, _From, State) ->
     {noreply, State}.
 
 handle_cast({push, StreamId, Headers},
-            State=#state{last_sent_stream_id=LastStreamId}) ->
+            State=#state{remote_enable_push=true,
+                         last_sent_stream_id=LastStreamId}) ->
     case find_stream(StreamId, State) of
         error ->
             {noreply, State};
@@ -118,6 +121,8 @@ handle_cast({push, StreamId, Headers},
                     {noreply, State3}
             end
     end;
+handle_cast({push, _StreamId, _Headers}, State) ->
+    {noreply, State};
 handle_cast({reply, StreamId, Headers, Body, Final}, State) ->
     case find_stream(StreamId, State) of
         error ->
@@ -346,15 +351,7 @@ handle_frame(_Bin, _Len, ?PRIORITY, _Flag, _StreamId, State) ->
 handle_frame(Bin, Len, ?SETTINGS, Flag, 0, State)
   when Len rem ?SETTINGS_ENTRY_SIZE =:= 0 ->
     <<Payload:Len/binary, NextBin/binary>> = Bin,
-    case Flag band ?FLAG_ACK > 0 of
-        true when Len =:= 0 ->
-            on_recv(NextBin, State);
-        true ->
-            connection_error(State, ?PROTOCOL_ERROR);
-        false ->
-            State2 = parse_settings(Payload, State),
-            on_recv(NextBin, State2)
-    end;
+    handle_settings(Payload, Len, Flag band ?FLAG_ACK > 0, State, NextBin);
 handle_frame(_Bin, _, ?SETTINGS, _Flag, _, State) ->
     connection_error(State, ?FRAME_SIZE_ERROR);
 handle_frame(<<_:1, Delta:31, NextBin/binary>>, 4, ?WINDOW_UPDATE, _Flag,
@@ -415,6 +412,13 @@ handle_frame(Bin, Len, Type, _Flag, _StreamId, State) ->
     <<_Payload:Len/binary, NextBin/binary>> = Bin,
     on_recv(NextBin, State).
 
+handle_settings(_Bin, Len, true, State, NextBin) when Len =:= 0 ->
+    on_recv(NextBin, State);
+handle_settings(_Bin, _Len, true, State, _NextBin) ->
+    connection_error(State, ?PROTOCOL_ERROR);
+handle_settings(Bin, _Len, false, State, NextBin) ->
+    parse_settings(Bin, State, NextBin).
+
 strip_padding(Bin, Len, Flag) when Flag band ?FLAG_PADDED =:= 0 ->
     <<Payload:Len/binary, Rest/binary>> = Bin,
     {Payload, Rest};
@@ -425,7 +429,7 @@ strip_padding(<<PadLen:8, Bin/binary>>, Len, _Flag) ->
 
 parse_settings(<<16#4:16, InitialWindowSize:32, Rest/binary>>,
                State=#state{streams=Streams,
-                            initial_window_size=OldSize}) ->
+                            initial_window_size=OldSize}, NextBin) ->
     %% adjust remote window size for all existing streams.
     io:format("Change InitialWindowSize to ~p~n", [InitialWindowSize]),
     Streams2 = orddict:map(fun(_StreamId,
@@ -434,12 +438,21 @@ parse_settings(<<16#4:16, InitialWindowSize:32, Rest/binary>>,
                                    Stream#stream{remotewin=NewWin}
                            end, Streams),
     parse_settings(Rest, State#state{initial_window_size=InitialWindowSize,
-                                     streams=Streams2});
-parse_settings(<<_:16, _:32, Rest/binary>>, State) ->
-    parse_settings(Rest, State);
-parse_settings(<<>>, State) ->
+                                     streams=Streams2}, NextBin);
+parse_settings(<<16#2:16, 0:32, Rest/binary>>, State, NextBin) ->
+    %% SETTINGS_ENABLE_PUSH
+    parse_settings(Rest, State#state{remote_enable_push=false}, NextBin);
+parse_settings(<<16#2:16, 1:32, Rest/binary>>, State, NextBin) ->
+    %% SETTINGS_ENABLE_PUSH
+    parse_settings(Rest, State#state{remote_enable_push=true}, NextBin);
+parse_settings(<<16#2:16, _:32, _Rest/binary>>, State, _NextBin) ->
+    %% SETTINGS_ENABLE_PUSH with value not in {0,1} is error.
+    connection_error(State, ?PROTOCOL_ERROR);
+parse_settings(<<_:16, _:32, Rest/binary>>, State, NextBin) ->
+    parse_settings(Rest, State, NextBin);
+parse_settings(<<>>, State, NextBin) ->
     send_settings_ack(State),
-    State.
+    on_recv(NextBin, State).
 
 start_request(StreamId, Headers, StreamState,
               State=#state{streams=Streams, pids=Pids}) ->
