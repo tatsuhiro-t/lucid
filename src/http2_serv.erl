@@ -383,13 +383,11 @@ handle_frame(_Bin, Len, ?RST_STREAM, _Flag, _StreamId, State)
     connection_error(State, ?FRAME_SIZE_ERROR);
 handle_frame(_Bin, _Len, ?RST_STREAM, _Flag, _StreamId, State) ->
     connection_error(State, ?PROTOCOL_ERROR);
-handle_frame(<<Payload:64, NextBin/binary>>, 8, ?PING, Flag, 0, State) ->
-    case Flag band ?FLAG_ACK > 0 of
-        true ->
-            ok;
-        false ->
-            send_ping(Payload, State)
-    end,
+handle_frame(<<_Payload:64, NextBin/binary>>, 8, ?PING, Flag, 0, State)
+  when Flag band ?FLAG_ACK > 0 ->
+    on_recv(NextBin, State);
+handle_frame(<<Payload:64, NextBin/binary>>, 8, ?PING, _Flag, 0, State) ->
+    send_ping(Payload, State),
     on_recv(NextBin, State);
 handle_frame(_Bin, Len, ?PING, _Flag, _StreamId, State) when Len =/= 8 ->
     connection_error(State, ?FRAME_SIZE_ERROR);
